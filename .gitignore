@@ -1,0 +1,19 @@
+# Data files
+invoices.json
+
+# Uploaded files
+uploads/*.pdf
+
+# Don't ignore the .gitkeep file
+!uploads/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
