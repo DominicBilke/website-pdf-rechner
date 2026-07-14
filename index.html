@@ -3,106 +3,169 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF-Rechner - Rechnungsverwaltung</title>
+    <title>InvoicePilot - PDF-Rechner</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="language-switcher-header">
-                <button id="langEn" class="lang-btn active">EN</button>
-                <button id="langDe" class="lang-btn">DE</button>
+    <div class="app-shell">
+        <header class="topbar">
+            <a class="brand" href="index.html" aria-label="InvoicePilot Startseite">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" role="img">
+                        <path d="M7 3h7l4 4v14H7V3Z"></path>
+                        <path d="M14 3v5h5"></path>
+                        <path d="M9.5 12h5"></path>
+                        <path d="M9.5 16h5"></path>
+                    </svg>
+                </span>
+                <span>
+                    <strong>InvoicePilot</strong>
+                    <small data-i18n="brandSubtitle">PDF-Rechner</small>
+                </span>
+            </a>
+
+            <nav class="topnav" aria-label="Hauptnavigation">
+                <a href="#upload" data-i18n="navUpload">Upload</a>
+                <a href="#summary" data-i18n="navSummary">Auswertung</a>
+                <a href="impressum.html">Impressum</a>
+            </nav>
+
+            <div class="language-switcher" aria-label="Sprache">
+                <button type="button" class="lang-btn" id="langDe" data-lang="de">DE</button>
+                <button type="button" class="lang-btn" id="langEn" data-lang="en">EN</button>
             </div>
-            <h1 data-en="📄 PDF Calculator" data-de="📄 PDF-Rechner">📄 PDF-Rechner</h1>
-            <p data-en="Upload your invoice PDFs and get a monthly overview" data-de="Laden Sie Ihre Rechnungs-PDFs hoch und erhalten Sie eine monatliche Übersicht">Laden Sie Ihre Rechnungs-PDFs hoch und erhalten Sie eine monatliche Übersicht</p>
         </header>
 
         <main>
-            <div class="upload-section">
-                <h2 data-en="Upload Invoice" data-de="Rechnung hochladen">Rechnung hochladen</h2>
-                <form id="uploadForm" enctype="multipart/form-data">
-                    <div class="file-input-wrapper">
-                        <input type="file" id="pdfFile" name="pdfFile" accept=".pdf" multiple required>
-                        <label for="pdfFile" class="file-label">
-                            <span class="file-label-text" data-en="Select PDF files (multiple files possible)" data-de="PDF-Dateien auswählen (mehrere möglich)">PDF-Dateien auswählen (mehrere möglich)</span>
-                            <span class="file-label-icon">📁</span>
+            <section class="hero-section">
+                <div class="hero-copy">
+                    <p class="eyebrow" data-i18n="eyebrow">Rechnungen schneller erfassen</p>
+                    <h1 data-i18n="heroTitle">PDF-Rechnungen hochladen, Beträge prüfen, Monate auswerten.</h1>
+                    <p class="hero-text" data-i18n="heroText">Ein kompaktes Dashboard fuer OCR-Erkennung, Netto-/MwSt.-Berechnung und monatliche Uebersichten.</p>
+                </div>
+                <div class="metric-grid" id="metricGrid" aria-live="polite">
+                    <article class="metric-tile">
+                        <span data-i18n="metricInvoices">Rechnungen</span>
+                        <strong id="metricInvoices">0</strong>
+                    </article>
+                    <article class="metric-tile">
+                        <span data-i18n="metricGross">Brutto gesamt</span>
+                        <strong id="metricGross">0,00 EUR</strong>
+                    </article>
+                    <article class="metric-tile">
+                        <span data-i18n="metricVat">MwSt. gesamt</span>
+                        <strong id="metricVat">0,00 EUR</strong>
+                    </article>
+                </div>
+            </section>
+
+            <section class="workspace-grid">
+                <section class="panel upload-panel" id="upload">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="section-kicker" data-i18n="uploadKicker">Import</p>
+                            <h2 data-i18n="uploadTitle">Rechnungen verarbeiten</h2>
+                        </div>
+                    </div>
+
+                    <form id="uploadForm" enctype="multipart/form-data">
+                        <label class="drop-zone" id="dropZone" for="pdfFile">
+                            <input type="file" id="pdfFile" name="pdfFile" accept="application/pdf,.pdf" multiple required>
+                            <span class="drop-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" role="img">
+                                    <path d="M12 16V4"></path>
+                                    <path d="m7 9 5-5 5 5"></path>
+                                    <path d="M5 16v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"></path>
+                                </svg>
+                            </span>
+                            <span class="drop-title" data-i18n="dropTitle">PDFs auswaehlen oder hier ablegen</span>
+                            <span class="drop-help" data-i18n="dropHelp">Mehrere Dateien moeglich, maximal 10 MB je PDF.</span>
                         </label>
-                    </div>
-                    <div id="selectedFiles" class="selected-files"></div>
-                    
-                    <div class="form-group">
-                        <label for="language" class="form-label" data-en="Invoice Language" data-de="Sprache der Rechnung">Sprache der Rechnung</label>
-                        <select id="language" name="language" class="form-select">
-                            <option value="de">Deutsch</option>
-                            <option value="en">English</option>
-                            <option value="fr">Français</option>
-                            <option value="es">Español</option>
-                            <option value="it">Italiano</option>
-                            <option value="pt">Português</option>
-                            <option value="ru">Русский</option>
-                            <option value="zh-CN">中文</option>
-                            <option value="ja">日本語</option>
-                            <option value="ko">한국어</option>
-                            <option value="ar">العربية</option>
-                            <option value="hi">हिन्दी</option>
-                            <option value="nl">Nederlands</option>
-                            <option value="pl">Polski</option>
-                            <option value="sv">Svenska</option>
-                            <option value="da">Dansk</option>
-                            <option value="fi">Suomi</option>
-                            <option value="cs">Čeština</option>
-                            <option value="hu">Magyar</option>
-                            <option value="ro">Română</option>
-                            <option value="tr">Türkçe</option>
-                            <option value="el">Ελληνικά</option>
-                        </select>
-                    </div>
-                    
-                    <button type="submit" class="btn-primary" data-en="Process Invoice" data-de="Rechnung verarbeiten">Rechnung verarbeiten</button>
-                </form>
-                <div id="uploadStatus" class="status-message"></div>
-                
-                <!-- Progress Bar for Multiple Uploads -->
-                <div id="uploadProgress" class="upload-progress" style="display: none;">
-                    <div class="progress-info">
-                        <span id="progressText">Verarbeite Rechnung 1 von 5...</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div id="progressBar" class="progress-bar-fill" style="width: 0%"></div>
-                    </div>
-                </div>
-            </div>
 
-                <div class="results-section">
-                <div class="section-title">
-                    <h2 data-en="Recognized Invoice Information" data-de="Erkannte Rechnungsinformationen">Erkannte Rechnungsinformationen</h2>
-                </div>
-                <div id="invoiceDetails" class="invoice-details"></div>
-                <div id="invoiceBreakdown" class="invoice-breakdown" style="display: none;"></div>
-            </div>
+                        <div class="form-row">
+                            <label class="field">
+                                <span data-i18n="languageLabel">Rechnungssprache</span>
+                                <select id="language" name="language">
+                                    <option value="de">Deutsch</option>
+                                    <option value="en">English</option>
+                                    <option value="fr">Francais</option>
+                                    <option value="es">Espanol</option>
+                                    <option value="it">Italiano</option>
+                                    <option value="pt">Portugues</option>
+                                    <option value="nl">Nederlands</option>
+                                    <option value="pl">Polski</option>
+                                    <option value="tr">Turkce</option>
+                                </select>
+                            </label>
+                            <button type="submit" class="primary-action" id="processBtn">
+                                <span data-i18n="processBtn">Verarbeiten</span>
+                            </button>
+                        </div>
+                    </form>
 
-            <div class="summary-section">
-                <div class="section-title">
-                    <h2 data-en="Monthly Summary" data-de="Monatliche Zusammenfassung">Monatliche Zusammenfassung</h2>
-                    <button id="clearAll" class="btn-secondary" data-en="Delete All Data" data-de="Alle Daten löschen">Alle Daten löschen</button>
+                    <div class="queue-panel" aria-live="polite">
+                        <div class="queue-header">
+                            <strong data-i18n="queueTitle">Upload-Warteschlange</strong>
+                            <span id="queueCount">0</span>
+                        </div>
+                        <div class="progress-track" aria-hidden="true">
+                            <div class="progress-fill" id="progressBar"></div>
+                        </div>
+                        <div class="file-list" id="fileList"></div>
+                    </div>
+                </section>
+
+                <section class="panel results-panel">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="section-kicker" data-i18n="resultsKicker">Extraktion</p>
+                            <h2 data-i18n="resultsTitle">Letzte Ergebnisse</h2>
+                        </div>
+                        <button type="button" class="ghost-action" id="clearResults" data-i18n="clearResults">Liste leeren</button>
+                    </div>
+                    <div class="status-message" id="uploadStatus"></div>
+                    <div class="result-list" id="resultList">
+                        <div class="empty-state" data-i18n="emptyResults">Noch keine Verarbeitung gestartet.</div>
+                    </div>
+                </section>
+            </section>
+
+            <section class="panel summary-panel" id="summary">
+                <div class="panel-heading">
+                    <div>
+                        <p class="section-kicker" data-i18n="summaryKicker">Monate</p>
+                        <h2 data-i18n="summaryTitle">Finanzuebersicht</h2>
+                    </div>
+                    <button type="button" class="danger-action" id="clearAll" data-i18n="deleteAll">Alle Daten loeschen</button>
                 </div>
-                <div id="monthlySummary" class="monthly-summary"></div>
-                <div id="monthlyVATSummary" class="monthly-vat-summary" style="display: none;"></div>
-            </div>
+
+                <div class="summary-table-wrap">
+                    <table class="summary-table">
+                        <thead>
+                            <tr>
+                                <th data-i18n="monthCol">Monat</th>
+                                <th data-i18n="countCol">Anzahl</th>
+                                <th data-i18n="netCol">Netto</th>
+                                <th data-i18n="vatCol">MwSt.</th>
+                                <th data-i18n="grossCol">Brutto</th>
+                            </tr>
+                        </thead>
+                        <tbody id="summaryBody">
+                            <tr>
+                                <td colspan="5" class="empty-cell" data-i18n="emptySummary">Noch keine Rechnungen verarbeitet.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
         </main>
 
         <footer class="main-footer">
-            <div class="footer-links">
-                <a href="impressum.html">Impressum</a> | 
-                <a href="datenschutzerklaerung.html">Datenschutzerklärung</a>
-            </div>
-            <div class="footer-copyright">
-                © 2025 Bilke Web- und Softwareentwicklung
-            </div>
+            <a href="datenschutzerklaerung.html">Datenschutzerklaerung</a>
+            <span>InvoicePilot, 2026</span>
         </footer>
     </div>
 
     <script src="script.js"></script>
 </body>
 </html>
-

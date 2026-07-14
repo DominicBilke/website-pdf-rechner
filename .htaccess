@@ -1,17 +1,15 @@
-# Enable PHP error display (optional, for development)
-php_flag display_errors On
-
-# Allow access to PHP files
-<FilesMatch "\.php$">
-    Order Allow,Deny
-    Allow from all
-</FilesMatch>
-
-# Set upload file size limit
-php_value upload_max_filesize 10M
-php_value post_max_size 10M
-php_value max_execution_time 300
-
-# Prevent directory listing
 Options -Indexes
 
+php_flag display_errors Off
+php_value upload_max_filesize 10M
+php_value post_max_size 12M
+php_value max_execution_time 300
+
+<FilesMatch "^(invoices\.json|.*\.log)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

@@ -1,376 +1,398 @@
 <?php
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+declare(strict_types=1);
 
-// Configuration
+header('Content-Type: application/json; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
+
 define('UPLOAD_DIR', __DIR__ . '/uploads/');
 define('DATA_FILE', __DIR__ . '/invoices.json');
+define('MAX_UPLOAD_BYTES', 10 * 1024 * 1024);
 
-// Create uploads directory if it doesn't exist
-if (!file_exists(UPLOAD_DIR)) {
-    mkdir(UPLOAD_DIR, 0777, true);
-}
-
-// Initialize data file if it doesn't exist
-if (!file_exists(DATA_FILE)) {
-    file_put_contents(DATA_FILE, json_encode(['invoices' => []]));
-}
+ensureStorage();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success' => false, 'message' => 'Nur POST-Anfragen erlaubt']);
-    exit;
+    respond(false, 'Nur POST-Anfragen erlaubt', [], 405);
 }
 
 if (!isset($_FILES['pdfFile']) || $_FILES['pdfFile']['error'] !== UPLOAD_ERR_OK) {
-    echo json_encode(['success' => false, 'message' => 'Keine Datei hochgeladen oder Upload-Fehler']);
-    exit;
+    respond(false, 'Keine Datei hochgeladen oder Upload-Fehler', [], 400);
 }
 
 $file = $_FILES['pdfFile'];
 
-// Validate file type
-$finfo = new finfo(FILEINFO_MIME_TYPE);
-$mimeType = $finfo->file($file['tmp_name']);
-if ($mimeType !== 'application/pdf') {
-    echo json_encode(['success' => false, 'message' => 'Bitte laden Sie nur PDF-Dateien hoch']);
-    exit;
+if ($file['size'] > MAX_UPLOAD_BYTES) {
+    respond(false, 'Die PDF-Datei ist groesser als 10 MB', [], 413);
 }
 
-// Move uploaded file
-$filename = uniqid('invoice_', true) . '.pdf';
-$filepath = UPLOAD_DIR . $filename;
-move_uploaded_file($file['tmp_name'], $filepath);
+$mimeType = detectMimeType($file['tmp_name']);
+if ($mimeType !== 'application/pdf') {
+    respond(false, 'Bitte laden Sie nur PDF-Dateien hoch', [], 415);
+}
 
-// Get language from POST data, default to German
-$language = isset($_POST['language']) ? $_POST['language'] : 'de';
+$storedFilename = uniqid('invoice_', true) . '.pdf';
+$filepath = UPLOAD_DIR . $storedFilename;
 
-// Extract data from PDF using OCR
-$extractedData = extractPdfData($filepath, $language);
+if (!move_uploaded_file($file['tmp_name'], $filepath)) {
+    respond(false, 'Die Datei konnte nicht gespeichert werden', [], 500);
+}
 
-// Store invoice data
-$data = json_decode(file_get_contents(DATA_FILE), true);
+$language = isset($_POST['language']) ? (string)$_POST['language'] : 'de';
+$extraction = extractPdfData($filepath, $language);
+
+if (!$extraction['success']) {
+    @unlink($filepath);
+    respond(false, $extraction['message'], [
+        'extraction' => [
+            'method' => $extraction['method'],
+            'text_length' => $extraction['text_length']
+        ]
+    ], 422);
+}
+
 $invoice = [
-    'id' => uniqid(),
-    'filename' => $file['name'],
-    'date' => $extractedData['date'],
-    'amount' => $extractedData['amount'],
-    'vat' => $extractedData['vat'],
-    'vat_amount' => isset($extractedData['vat_amount']) ? $extractedData['vat_amount'] : null,
-    'net_amount' => isset($extractedData['net_amount']) ? $extractedData['net_amount'] : null,
-    'month' => $extractedData['month'],
-    'timestamp' => date('Y-m-d H:i:s')
+    'id' => uniqid('inv_', true),
+    'filename' => basename((string)$file['name']),
+    'stored_filename' => $storedFilename,
+    'date' => $extraction['data']['date'],
+    'amount' => $extraction['data']['amount'],
+    'vat' => $extraction['data']['vat'],
+    'vat_amount' => $extraction['data']['vat_amount'],
+    'net_amount' => $extraction['data']['net_amount'],
+    'month' => $extraction['data']['month'],
+    'language' => getTesseractLanguage($language),
+    'extraction_method' => $extraction['method'],
+    'timestamp' => date('c')
 ];
-$data['invoices'][] = $invoice;
-file_put_contents(DATA_FILE, json_encode($data, JSON_PRETTY_PRINT));
 
-echo json_encode([
-    'success' => true,
+appendInvoice($invoice);
+
+respond(true, 'Rechnung erfolgreich verarbeitet', [
     'invoice' => [
-        'date' => $extractedData['date'],
-        'amount' => $extractedData['amount'],
-        'vat' => $extractedData['vat'],
-        'vat_amount' => isset($extractedData['vat_amount']) ? $extractedData['vat_amount'] : null,
-        'net_amount' => isset($extractedData['net_amount']) ? $extractedData['net_amount'] : null
+        'id' => $invoice['id'],
+        'filename' => $invoice['filename'],
+        'date' => $invoice['date'],
+        'amount' => $invoice['amount'],
+        'vat' => $invoice['vat'],
+        'vat_amount' => $invoice['vat_amount'],
+        'net_amount' => $invoice['net_amount']
+    ],
+    'extraction' => [
+        'method' => $extraction['method'],
+        'text_length' => $extraction['text_length']
     ]
 ]);
 
-/**
- * Tesseract language mapping
- */
-function getTesseractLanguage($lang) {
-    $tesseract_arr = array(
+function ensureStorage(): void {
+    if (!is_dir(UPLOAD_DIR)) {
+        mkdir(UPLOAD_DIR, 0755, true);
+    }
+
+    if (!file_exists(DATA_FILE)) {
+        file_put_contents(DATA_FILE, json_encode(['invoices' => []], JSON_PRETTY_PRINT));
+    }
+}
+
+function detectMimeType(string $path): string {
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mimeType = $finfo->file($path);
+        return $mimeType ?: '';
+    }
+
+    return mime_content_type($path) ?: '';
+}
+
+function appendInvoice(array $invoice): void {
+    $handle = fopen(DATA_FILE, 'c+');
+    if (!$handle) {
+        respond(false, 'Datenspeicher konnte nicht geoeffnet werden', [], 500);
+    }
+
+    if (!flock($handle, LOCK_EX)) {
+        fclose($handle);
+        respond(false, 'Datenspeicher ist gerade gesperrt', [], 503);
+    }
+
+    $contents = stream_get_contents($handle);
+    $data = json_decode($contents ?: '{"invoices":[]}', true);
+    if (!is_array($data) || !isset($data['invoices']) || !is_array($data['invoices'])) {
+        $data = ['invoices' => []];
+    }
+
+    $data['invoices'][] = $invoice;
+
+    ftruncate($handle, 0);
+    rewind($handle);
+    fwrite($handle, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    fflush($handle);
+    flock($handle, LOCK_UN);
+    fclose($handle);
+}
+
+function extractPdfData(string $filepath, string $language = 'de'): array {
+    $text = '';
+    $method = 'none';
+    $tesseractLang = getTesseractLanguage($language);
+
+    $ocrText = extractTextWithOcrApi($filepath, $tesseractLang);
+    if (strlen(trim($ocrText)) >= 40) {
+        $text = $ocrText;
+        $method = 'OCR API';
+    }
+
+    if (strlen(trim($text)) < 40) {
+        $localText = extractTextWithPdftotext($filepath);
+        if (strlen(trim($localText)) >= 40) {
+            $text = $localText;
+            $method = 'pdftotext';
+        }
+    }
+
+    $textLength = strlen(trim($text));
+    if ($textLength < 40) {
+        return extractionError('Es konnte kein verwertbarer Text aus der PDF gelesen werden', $method, $textLength);
+    }
+
+    $date = extractInvoiceDate($text);
+    $amount = extractTotalAmount($text);
+    if ($amount === null) {
+        return extractionError('Es konnte kein Gesamtbetrag erkannt werden', $method, $textLength);
+    }
+
+    $vat = extractVatRate($text);
+    $vatAmount = extractVatAmount($text, $amount);
+    if ($vatAmount === null && $vat !== null) {
+        $vatAmount = round($amount * $vat / (100 + $vat), 2);
+    }
+
+    $netAmount = $vatAmount !== null ? round($amount - $vatAmount, 2) : null;
+    if ($netAmount === null && $vat !== null) {
+        $netAmount = round($amount / (1 + $vat / 100), 2);
+        $vatAmount = round($amount - $netAmount, 2);
+    }
+
+    return [
+        'success' => true,
+        'method' => $method,
+        'text_length' => $textLength,
+        'data' => [
+            'date' => $date,
+            'amount' => formatAmount($amount),
+            'vat' => $vat ?? 19,
+            'vat_amount' => $vatAmount !== null ? formatAmount($vatAmount) : null,
+            'net_amount' => $netAmount !== null ? formatAmount($netAmount) : null,
+            'month' => date('Y-m', strtotime($date))
+        ]
+    ];
+}
+
+function extractTextWithOcrApi(string $filepath, string $tesseractLang): string {
+    if (!function_exists('curl_init') || !class_exists('CURLFile')) {
+        return '';
+    }
+
+    $ch = curl_init('https://text-konvertierung.bilke-projects.com/convert_file.php');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => [
+            'lang' => $tesseractLang,
+            'pdffile' => new CURLFile($filepath, 'application/pdf', basename($filepath))
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode !== 200 || !is_string($response) || stripos($response, '<html') !== false) {
+        return '';
+    }
+
+    return $response;
+}
+
+function extractTextWithPdftotext(string $filepath): string {
+    if (!function_exists('shell_exec')) {
+        return '';
+    }
+
+    $nullDevice = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN' ? 'NUL' : '/dev/null';
+    $output = shell_exec('pdftotext ' . escapeshellarg($filepath) . ' - 2>' . $nullDevice);
+    return is_string($output) ? $output : '';
+}
+
+function extractInvoiceDate(string $text): string {
+    if (preg_match('/(\d{1,2})\.(\d{1,2})\.(\d{4})/', $text, $matches)) {
+        return sprintf('%04d-%02d-%02d', (int)$matches[3], (int)$matches[2], (int)$matches[1]);
+    }
+
+    if (preg_match('/(\d{4})-(\d{1,2})-(\d{1,2})/', $text, $matches)) {
+        return sprintf('%04d-%02d-%02d', (int)$matches[1], (int)$matches[2], (int)$matches[3]);
+    }
+
+    if (preg_match('/(\d{1,2})\/(\d{1,2})\/(\d{4})/', $text, $matches)) {
+        return sprintf('%04d-%02d-%02d', (int)$matches[3], (int)$matches[1], (int)$matches[2]);
+    }
+
+    return date('Y-m-d');
+}
+
+function extractTotalAmount(string $text): ?float {
+    $candidates = [];
+    $keywords = [
+        'gesamtbetrag',
+        'endbetrag',
+        'rechnungsbetrag',
+        'zu zahlen',
+        'zahlungsbetrag',
+        'total',
+        'grand total',
+        'amount due',
+        'balance due'
+    ];
+
+    foreach ($keywords as $keyword) {
+        $pattern = '/' . preg_quote($keyword, '/') . '[^\d]{0,35}(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))/iu';
+        if (preg_match_all($pattern, $text, $matches)) {
+            foreach ($matches[1] as $amount) {
+                $normalized = normalizeAmount($amount);
+                if ($normalized !== null) {
+                    $candidates[] = ['amount' => $normalized, 'weight' => 3];
+                }
+            }
+        }
+    }
+
+    if (preg_match_all('/(?:EUR|Euro|€)?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))\s*(?:EUR|Euro|€)?/u', $text, $matches)) {
+        foreach ($matches[1] as $amount) {
+            $normalized = normalizeAmount($amount);
+            if ($normalized !== null) {
+                $candidates[] = ['amount' => $normalized, 'weight' => 1];
+            }
+        }
+    }
+
+    $candidates = array_filter($candidates, function (array $candidate): bool {
+        return $candidate['amount'] >= 0.01 && $candidate['amount'] <= 50000;
+    });
+
+    if (!$candidates) {
+        return null;
+    }
+
+    usort($candidates, function (array $a, array $b): int {
+        if ($a['weight'] === $b['weight']) {
+            return $b['amount'] <=> $a['amount'];
+        }
+        return $b['weight'] <=> $a['weight'];
+    });
+
+    return (float)$candidates[0]['amount'];
+}
+
+function extractVatRate(string $text): ?int {
+    $patterns = [
+        '/(?:MwSt|USt|VAT|GST|Sales\s*Tax)[^\d]{0,12}(\d{1,2})(?:[.,]\d+)?\s*%/iu',
+        '/(\d{1,2})(?:[.,]\d+)?\s*%[^\n]{0,16}(?:MwSt|USt|VAT|GST)/iu'
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $text, $matches)) {
+            $rate = (int)$matches[1];
+            if ($rate >= 0 && $rate <= 30) {
+                return $rate;
+            }
+        }
+    }
+
+    return 19;
+}
+
+function extractVatAmount(string $text, float $grossAmount): ?float {
+    $patterns = [
+        '/(?:MwSt|USt|VAT|GST|Tax)[^\d]{0,35}(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))/iu',
+        '/(?:Steuerbetrag|Tax amount)[^\d]{0,35}(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2}))/iu'
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match_all($pattern, $text, $matches)) {
+            foreach ($matches[1] as $amount) {
+                $normalized = normalizeAmount($amount);
+                if ($normalized !== null && $normalized >= 0 && $normalized < $grossAmount) {
+                    return $normalized;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function normalizeAmount(string $amount): ?float {
+    $amount = trim(str_replace(["\xc2\xa0", ' '], '', $amount));
+    $lastComma = strrpos($amount, ',');
+    $lastDot = strrpos($amount, '.');
+
+    if ($lastComma !== false && $lastDot !== false) {
+        $decimalSeparator = $lastComma > $lastDot ? ',' : '.';
+        $thousandSeparator = $decimalSeparator === ',' ? '.' : ',';
+        $amount = str_replace($thousandSeparator, '', $amount);
+        $amount = str_replace($decimalSeparator, '.', $amount);
+    } elseif ($lastComma !== false) {
+        $amount = str_replace('.', '', $amount);
+        $amount = str_replace(',', '.', $amount);
+    } else {
+        $amount = str_replace(',', '', $amount);
+    }
+
+    return is_numeric($amount) ? (float)$amount : null;
+}
+
+function formatAmount(float $amount): string {
+    return number_format($amount, 2, '.', '');
+}
+
+function getTesseractLanguage(string $lang): string {
+    $languages = [
         'de' => 'deu',
         'en' => 'eng',
         'fr' => 'fra',
         'es' => 'spa',
         'it' => 'ita',
         'pt' => 'por',
+        'nl' => 'nld',
+        'pl' => 'pol',
+        'tr' => 'tur',
         'ru' => 'rus',
         'zh-CN' => 'chi_sim',
         'ja' => 'jpn',
         'ko' => 'kor',
         'ar' => 'ara',
-        'hi' => 'hin',
-        'bg' => 'bul',
-        'ca' => 'cat',
-        'hr' => 'hrv',
-        'cs' => 'ces',
-        'da' => 'dan',
-        'nl' => 'nld',
-        'fi' => 'fin',
-        'el' => 'ell',
-        'hu' => 'hun',
-        'id' => 'ind',
-        'ms' => 'msa',
-        'nb' => 'nor',
-        'pl' => 'pol',
-        'ro' => 'ron',
-        'sk' => 'slk',
-        'sl' => 'slv',
-        'sv' => 'swe',
-        'ta' => 'tam',
-        'th' => 'tha',
-        'tr' => 'tur',
-        'vi' => 'vie'
-    );
-    
-    return isset($tesseract_arr[$lang]) ? $tesseract_arr[$lang] : 'deu';
+        'hi' => 'hin'
+    ];
+
+    return $languages[$lang] ?? 'deu';
 }
 
-/**
- * Extract total amount from text with careful validation
- * Only returns amounts that look like valid currency values (ending in .XX format)
- */
-function extractTotalAmount($text) {
-    $validAmounts = [];
-    
-    // Pattern 1: Look for amounts with proper currency formatting ending in exactly 2 decimals
-    // Examples: "€ 123.45", "1.234,56 €", "€1,234.56"
-    if (preg_match_all('/(?:€\s*)?([1-9]\d{0,2}(?:[\.,]\d{3}){0,3}[\.,]\d{2})\s*€?/u', $text, $matches)) {
-        foreach ($matches[1] as $match) {
-            // Normalize the number (handle German 1.234,56 and English 1,234.56)
-            if (strpos($match, '.') !== false && strpos($match, ',') !== false) {
-                // Mixed format - prioritize comma as decimal separator
-                $normalized = str_replace('.', '', str_replace(',', '.', $match));
-            } else if (strpos($match, ',') !== false && strlen(substr($match, strpos($match, ',') + 1)) == 2) {
-                // German format: comma as decimal
-                $normalized = str_replace(',', '.', $match);
-            } else if (strpos($match, '.') !== false && strlen(substr($match, strpos($match, '.') + 1)) == 2) {
-                // English format: dot as decimal
-                $normalized = $match;
-            } else {
-                continue;
-            }
-            
-            if (is_numeric($normalized)) {
-                $floatValue = (float)$normalized;
-                // Only accept reasonable amounts between 0.01 and 50,000
-                if ($floatValue >= 0.01 && $floatValue <= 50000) {
-                    $validAmounts[] = $floatValue;
-                }
-            }
-        }
-    }
-    
-    // Pattern 2: Look for amounts near total keywords
-    $keywords = ['Gesamtbetrag', 'Endbetrag', 'Total\s+Amount', 'Total:', 'Sum:', 'zu zahlen', 'Grand Total'];
-    foreach ($keywords as $keyword) {
-        $pattern = '/' . preg_quote(preg_replace('/\s+/', '\s+', $keyword)) . '\s*[:]?\s*[\D]*(\d{1,3}(?:[\.,]\d{3}){0,3}[\.,]\d{2})/ui';
-        if (preg_match($pattern, $text, $matches)) {
-            $match = $matches[1];
-            // Same normalization as above
-            if (strpos($match, '.') !== false && strpos($match, ',') !== false) {
-                $normalized = str_replace('.', '', str_replace(',', '.', $match));
-            } else if (strpos($match, ',') !== false) {
-                $normalized = str_replace(',', '.', $match);
-            } else {
-                $normalized = $match;
-            }
-            
-            if (is_numeric($normalized)) {
-                $floatValue = (float)$normalized;
-                if ($floatValue >= 0.01 && $floatValue <= 50000) {
-                    $validAmounts[] = $floatValue;
-                }
-            }
-        }
-    }
-    
-    // Return the largest reasonable amount found
-    if (!empty($validAmounts)) {
-        $maxAmount = max($validAmounts);
-        return number_format($maxAmount, 2, '.', '');
-    }
-    
-    // If nothing found, return null (will use demo data)
-    return null;
-}
-
-/**
- * Generate demo data when extraction fails
- */
-function generateDemoData() {
-    $date = date('Y-m-d');
-    $amount = rand(50, 5000) / 100; // Random between 0.50 and 50.00
-    $vat = 19;
-    $netAmount = number_format($amount / (1 + $vat / 100), 2, '.', '');
-    $vatAmount = number_format($amount - $netAmount, 2, '.', '');
-    
+function extractionError(string $message, string $method, int $textLength): array {
     return [
-        'date' => $date,
-        'amount' => number_format($amount, 2, '.', ''),
-        'vat' => $vat,
-        'vat_amount' => $vatAmount,
-        'net_amount' => $netAmount,
-        'month' => date('Y-m')
+        'success' => false,
+        'message' => $message,
+        'method' => $method,
+        'text_length' => $textLength
     ];
 }
 
-/**
- * Extract data from PDF using OCR API and translate to English
- */
-function extractPdfData($filepath, $language = 'de') {
-    $text = '';
-    
-    // Map language to Tesseract format
-    $tesseractLang = getTesseractLanguage($language);
-    
-    // Try OCR API first
-    try {
-        $apiUrl = "https://text-konvertierung.bilke-projects.com/convert_file.php";
-        
-        if (class_exists('CURLFile')) {
-            $cfile = new CURLFile($filepath, 'application/pdf', basename($filepath));
-            $postData = [
-                'lang' => $tesseractLang,
-                'pdffile' => $cfile
-            ];
-        } else {
-            $postData = [
-                'lang' => $tesseractLang,
-                'pdffile' => '@' . $filepath
-            ];
-        }
-        
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $apiUrl);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode == 200 && !empty($response) && strpos($response, '<html') === false && strlen($response) > 50) {
-            $text = $response;
-        }
-    } catch (Exception $e) {
-        // Continue to fallback
-    }
-    
-    // Fallback: try pdftotext
-    if (empty($text) || strlen(trim($text)) < 50) {
-        if (function_exists('shell_exec')) {
-            $text = shell_exec("pdftotext " . escapeshellarg($filepath) . " - 2>/dev/null");
-        }
-    }
-    
-    // If still no text, return demo data
-    if (empty($text) || strlen(trim($text)) < 50) {
-        return generateDemoData();
-    }
-    
-    // Extract date (look for patterns like DD.MM.YYYY, YYYY-MM-DD, etc.)
-    $date = null;
-    
-    // German dates: DD.MM.YYYY
-    if (preg_match('/(\d{1,2})\.(\d{1,2})\.(\d{4})/', $text, $matches)) {
-        $date = sprintf('%04d-%02d-%02d', $matches[3], $matches[2], $matches[1]);
-    }
-    // ISO dates: YYYY-MM-DD
-    elseif (preg_match('/(\d{4})-(\d{1,2})-(\d{1,2})/', $text, $matches)) {
-        $date = $matches[0];
-    }
-    // US dates: MM/DD/YYYY
-    elseif (preg_match('/(\d{1,2})\/(\d{1,2})\/(\d{4})/', $text, $matches)) {
-        $date = sprintf('%04d-%02d-%02d', $matches[3], $matches[1], $matches[2]);
-    }
-    
-    // If no date found, use today
-    if (!$date) {
-        $date = date('Y-m-d');
-    }
-    
-    // Extract VAT rate first to help with amount extraction
-    $vat = 19; // Default
-    $vatAmount = null;
-    $netAmount = null;
-    
-    // Look for VAT rate patterns in German or English
-    // German: "MwSt." or "USt." or "MwSt"
-    if (preg_match('/[Mm]w[Ss]t[.\s]*[:]?\s*(\d{1,2})[%]?/i', $text, $vatMatch)) {
-        $vat = (int)$vatMatch[1];
-    }
-    // English: "VAT" or "GST" or "Sales Tax"
-    elseif (preg_match('/(?:VAT|GST|Sales\s*Tax)[:\s]*(\d{1,2})[%]?/i', $text, $vatMatch)) {
-        $vat = (int)$vatMatch[1];
-    }
-    // Look for pattern: "19% VAT" or "VAT 19%"
-    elseif (preg_match('/(\d{1,2})%[\s]*(?:VAT|MwSt)/i', $text, $vatMatch)) {
-        $vat = (int)$vatMatch[1];
-    }
-    // Common pattern: "19%" or "(19%)"
-    elseif (preg_match('/\(?(\d{1,2})%\)?/', $text, $vatMatch)) {
-        $vat = (int)$vatMatch[1];
-    }
-    
-    // Extract amounts - prioritize TOTAL amount patterns
-    $amount = null;
-    $allAmounts = [];
-    
-    // Extract amounts with strict validation - only reasonable currency values
-    $amount = extractTotalAmount($text);
-    
-    // If extraction failed or returned invalid amount, use demo data
-    if (!$amount || (float)$amount <= 0 || (float)$amount > 50000) {
-        return generateDemoData();
-    }
-    
-    // Extract VAT amount if available
-    // Look for "MwSt-Betrag" or "VAT Amount" patterns (German and English)
-    if (preg_match('/(?:MwSt|USt|VAT|GST|Sales\s*Tax)[\s-]?[Bb]etrag[:\s]*[\D]*(\d+[\.,]\d{2})/ui', $text, $vatAmtMatch)) {
-        $vatAmountStr = str_replace(',', '.', $vatAmtMatch[1]);
-        if (is_numeric($vatAmountStr)) {
-            $vatAmountFloat = (float)$vatAmountStr;
-            if ($vatAmountFloat >= 0 && $vatAmountFloat < (float)$amount) {
-                $vatAmount = number_format($vatAmountFloat, 2, '.', '');
-            }
-        }
-    }
-    
-    // Also look for "VAT Amount" or "Tax Amount" in English
-    if (!$vatAmount && preg_match('/(?:VAT|Tax)\s*[Aa]mount[:\s]*[\D]*(\d+[\.,]\d{2})/u', $text, $vatAmtMatch)) {
-        $vatAmountStr = str_replace(',', '.', $vatAmtMatch[1]);
-        if (is_numeric($vatAmountStr)) {
-            $vatAmountFloat = (float)$vatAmountStr;
-            if ($vatAmountFloat >= 0 && $vatAmountFloat < (float)$amount) {
-                $vatAmount = number_format($vatAmountFloat, 2, '.', '');
-            }
-        }
-    }
-    
-    // Calculate derived values
-    // Calculate VAT amount if not extracted but we have amount and rate
-    if (!$vatAmount && $amount && $vat) {
-        $vatAmount = number_format((float)$amount * $vat / (100 + $vat), 2, '.', '');
-    }
-    
-    // Calculate net amount
-    if ($amount && $vatAmount) {
-        $netAmount = number_format((float)$amount - (float)$vatAmount, 2, '.', '');
-    } else if ($amount && $vat) {
-        $netAmount = number_format((float)$amount / (1 + $vat / 100), 2, '.', '');
-        if (!$vatAmount) {
-            $vatAmount = number_format((float)$amount - $netAmount, 2, '.', '');
-        }
-    }
-    
-    $month = date('Y-m', strtotime($date));
-    
-    return [
-        'date' => $date,
-        'amount' => $amount,
-        'vat' => $vat,
-        'vat_amount' => $vatAmount,
-        'net_amount' => $netAmount,
-        'month' => $month
-    ];
+function respond(bool $success, string $message, array $payload = [], int $status = 200): void {
+    http_response_code($status);
+    echo json_encode(array_merge([
+        'success' => $success,
+        'message' => $message
+    ], $payload), JSON_UNESCAPED_SLASHES);
+    exit;
 }
-?>
-
-

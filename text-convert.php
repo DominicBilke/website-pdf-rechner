@@ -7,10 +7,8 @@ $postdata = http_build_query(
 
 $opts = array(
     'ssl' => array(
-        'verify_peer' => false,
-        'verify_peername' => false
-        // Instead ideally use
-        // 'cafile' => 'path Certificate Authority file on local filesystem'
+        'verify_peer' => true,
+        'verify_peername' => true
     ),
     'http' => array(
         'method' => 'POST',
@@ -55,10 +53,13 @@ $txtTofile=$target_file_to;
 
 $from = $_POST['from'];
 $to = $_POST['to'];
-// When you have your own client ID and secret, put them down here:
-$CLIENT_ID = "bilkedominic@gmail.com";
-$CLIENT_SECRET = "07bbc21c01524c62b757f1be54b493dc";
+$CLIENT_ID = getenv('WHATS_MATE_CLIENT_ID') ?: '';
+$CLIENT_SECRET = getenv('WHATS_MATE_CLIENT_SECRET') ?: '';
 $txtTo ="";
+
+if ($CLIENT_ID === '' || $CLIENT_SECRET === '') {
+    $txtTo = 'Translation credentials are not configured on this server.';
+} else {
 
 $output = str_split($_POST['txt'], 2400);
 
@@ -77,7 +78,7 @@ $headers = array(
 );
 
 
-$url = 'http://api.whatsmate.net/v1/translation/translate';
+$url = 'https://api.whatsmate.net/v1/translation/translate';
 $ch = curl_init($url);
 
 curl_setopt($ch, CURLOPT_POST, 1);
@@ -88,6 +89,7 @@ curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postData));
 $txtTo .= curl_exec($ch);
 
 curl_close($ch);
+}
 }
 
 file_put_contents($target_file_to, $txtTo);
